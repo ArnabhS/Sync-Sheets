@@ -2,7 +2,6 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-/** Parse MYSQL_URL (or DATABASE_URL) into host/port/user/password/database for per-config overrides */
 function parseMysqlUrl(url: string): { host: string; port: number; user: string; password: string; database: string } | null {
   try {
     const u = new URL(url);
