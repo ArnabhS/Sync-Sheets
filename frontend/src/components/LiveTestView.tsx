@@ -3,7 +3,7 @@ import { getConfig, getSheetPreview, getDbPreview, triggerSync } from '../api/cl
 import type { SyncConfigWithState } from '../api/client';
 import './LiveTestView.css';
 
-interface SyncEventPayload {
+export interface SyncEventPayload {
   configId?: string;
   direction?: string;
   rowsAffected?: number;

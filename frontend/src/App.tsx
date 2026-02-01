@@ -3,7 +3,7 @@ import { listConfigs, type SyncConfigWithState } from './api/client';
 import { useWebSocket } from './hooks/useWebSocket';
 import { Dashboard } from './components/Dashboard';
 import { ConfigForm } from './components/ConfigForm';
-import { LiveTestView } from './components/LiveTestView';
+import { LiveTestView, type SyncEventPayload } from './components/LiveTestView';
 import './App.css';
 
 type View = 'list' | 'create' | 'edit' | 'test';
@@ -99,7 +99,7 @@ function App() {
         {view === 'test' && selectedId && (
           <LiveTestView
             configId={selectedId}
-            lastSyncMessage={lastMessage?.type === 'sync' ? lastMessage.payload : null}
+            lastSyncMessage={lastMessage?.type === 'sync' ? (lastMessage.payload as SyncEventPayload) : null}
             onBack={() => {
               setSelectedId(null);
               setView('list');
