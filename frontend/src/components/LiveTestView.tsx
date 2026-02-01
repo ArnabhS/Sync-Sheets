@@ -189,10 +189,7 @@ export function LiveTestView({ configId, lastSyncMessage, onBack }: LiveTestView
         )}
       </div>
 
-      <p className="live-test-hint">
-        Edit the Google Sheet or the MySQL table, then click &quot;Run sync now&quot; or wait for
-        the automatic poll. Both sides will stay in sync.
-      </p>
+      
     </div>
   );
 }

@@ -10,8 +10,7 @@ export interface SheetReadResult {
 }
 
 /**
- * Service for reading and writing Google Sheets using the Sheets API v4.
- * Uses Service Account credentials (server-side).
+ * Service for reading and writing Google Sheets using the Sheets API 
  */
 export class GoogleSheetsService {
   private auth: sheets_v4.Sheets | null = null;
@@ -49,7 +48,7 @@ export class GoogleSheetsService {
   }
 
   /**
-   * Build A1 range string. Sheet name is always single-quoted (required for API when name has underscore, spaces, etc.).
+   * Build A1 range string. Sheet name is always single-quoted (API accepts this for all names including underscore).
    * Single quotes inside the name are escaped by doubling.
    */
   private static buildRange(sheetName: string | undefined, rangeA1: string): string {
@@ -59,21 +58,101 @@ export class GoogleSheetsService {
   }
 
   /**
+   * Fetch sheet titles from the spreadsheet (for error messages).
+   */
+  async getSheetTitles(spreadsheetId: string): Promise<string[]> {
+    const sheets = await this.getClient();
+    const res = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: 'sheets.properties.title',
+    });
+    const titles = (res.data.sheets ?? []).map((s) => s.properties?.title ?? '').filter(Boolean);
+    console.log('[Sheets API] getSheetTitles', { spreadsheetId, titles });
+    return titles;
+  }
+
+  /**
+   * Resolve requested sheet name to an actual sheet title from the spreadsheet.
+   * - If only one sheet exists, use it (so any name like "sheet" or "sales_data" works).
+   * - Else case-insensitive match against API titles.
+   */
+  private static resolveSheetTitle(requested: string, apiTitles: string[]): string | null {
+    if (apiTitles.length === 0) return null;
+    if (apiTitles.length === 1) return apiTitles[0];
+    const lower = requested.trim().toLowerCase();
+    const found = apiTitles.find((t) => t.toLowerCase() === lower);
+    return found ?? null;
+  }
+
+  /**
+   * Get the actual sheet title to use for this config (for read and write).
+   * Fetches sheet titles from the API and resolves config.sheetName.
+   */
+  async getResolvedSheetName(config: SyncConfig): Promise<string> {
+    const spreadsheetId = GoogleSheetsService.parseSpreadsheetId(config.spreadsheetId);
+    const titles = await this.getSheetTitles(spreadsheetId);
+    const requested = config.sheetName?.trim() || 'Sheet1';
+    const resolved = GoogleSheetsService.resolveSheetTitle(requested, titles);
+    return resolved ?? requested;
+  }
+
+  /**
    * Read range from sheet. First row is treated as headers.
+   * If the requested sheet name fails (e.g. you put "sales_data" but the tab is "Sheet1"),
+   * we fetch actual sheet titles and retry with the only sheet or a case-insensitive match.
    */
   async readRange(config: SyncConfig): Promise<SheetReadResult> {
     const sheets = await this.getClient();
     const spreadsheetId = GoogleSheetsService.parseSpreadsheetId(config.spreadsheetId);
-    const range = GoogleSheetsService.buildRange(config.sheetName, config.range);
+    let sheetNameToUse = config.sheetName?.trim() || 'Sheet1';
+    let range = GoogleSheetsService.buildRange(sheetNameToUse, config.range);
 
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range,
-      valueRenderOption: 'UNFORMATTED_VALUE',
-      dateTimeRenderOption: 'SERIAL_NUMBER',
-    });
+    console.log('[Sheets API] request', { spreadsheetId, range, sheetName: sheetNameToUse });
+
+    let res;
+    try {
+      res = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range,
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'SERIAL_NUMBER',
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/Unable to parse range/i.test(msg)) {
+        const titles = await this.getSheetTitles(spreadsheetId);
+        const resolved = GoogleSheetsService.resolveSheetTitle(sheetNameToUse, titles);
+        if (resolved) {
+          sheetNameToUse = resolved;
+          range = GoogleSheetsService.buildRange(resolved, config.range);
+          console.log('[Sheets API] resolved sheet name', { requested: config.sheetName, resolved });
+          res = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range,
+            valueRenderOption: 'UNFORMATTED_VALUE',
+            dateTimeRenderOption: 'SERIAL_NUMBER',
+          });
+        } else {
+          const hint =
+            titles.length > 0
+              ? `Available sheet names: ${titles.map((t) => `"${t}"`).join(', ')}. Use one of these in "Sheet name".`
+              : 'This spreadsheet has no sheets.';
+          throw new Error(`Sheet name "${config.sheetName}" not found. ${hint}`);
+        }
+      } else {
+        throw e;
+      }
+    }
 
     const rawValues = (res.data.values ?? []) as string[][];
+    console.log('[Sheets API] response', {
+      range: res.data.range ?? range,
+      rowCount: rawValues.length,
+      headers: rawValues[0],
+      sampleRows: rawValues.slice(1, 4),
+      ...(rawValues.length <= 20 ? { fullRawValues: rawValues } : {}),
+    });
+
     if (rawValues.length === 0) {
       return { headers: [], rows: [], rawValues: [] };
     }
@@ -106,7 +185,7 @@ export class GoogleSheetsService {
 
   /**
    * Write rows to sheet. Replaces the data range (header + data).
-   * Range is computed to match value dimensions so append works.
+   * Range is computed to match value dimensions. Uses resolved sheet name (same as read).
    */
   async writeRange(
     config: SyncConfig,
@@ -115,11 +194,12 @@ export class GoogleSheetsService {
   ): Promise<void> {
     const sheets = await this.getClient();
     const spreadsheetId = GoogleSheetsService.parseSpreadsheetId(config.spreadsheetId);
+    const sheetName = await this.getResolvedSheetName(config);
     const numRows = 1 + rows.length;
     const numCols = headers.length;
     const endCol = GoogleSheetsService.columnLetter(numCols - 1);
     const rangeA1 = `A1:${endCol}${numRows}`;
-    const range = GoogleSheetsService.buildRange(config.sheetName, rangeA1);
+    const range = GoogleSheetsService.buildRange(sheetName, rangeA1);
 
     const values: unknown[][] = [headers];
     for (const row of rows) {
